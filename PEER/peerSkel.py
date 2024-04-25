@@ -312,10 +312,11 @@ class SecureChat:
 
             # Send each certificate chunk
             for chunk in certificate_chunks:
-                print("Sent: ", chunk)
+                #print("Sent: ", chunk)
                 client_socket.sendall(pickle.dumps(chunk))
                 time.sleep(0.3)  # Add a small delay
             client_socket.send(b'END_OF_DATA_STREAM')
+            
             print("All certificate chunks sent")
 
             # Receiving portion
@@ -325,7 +326,7 @@ class SecureChat:
             certificate_chunks = []
             while True:
                 data = client_socket.recv(4096)
-                print("data: ", data)
+                #print("data: ", data)
                 if not data or data == b'END_OF_DATA_STREAM':
                     break
                 certificate_chunks.append(data)
@@ -351,21 +352,34 @@ class SecureChat:
             initiator_id = initiator_id_binary.decode('utf-8')
 
             # Print extracted information
+            print("<---Certifcate Received--->")
             print("Key: ", initiator_key)
             print("Initiator ID:", initiator_id)
             print("Timestamp Created:", timestamp_created)
             print("Timestamp Valid Until:", timestamp_valid_until)
 
-            self.client_public_key_pem = initiator_key
-            self.client_public_key = serialization.load_pem_public_key(self.client_public_key_pem)
+            # ------------------------------------------certificate check start !!------------------------------------------
 
-            self.initiate_keyEx_s(client_socket)
+            curr_time = time.time()
+            valid_cert = True
+            if curr_time > timestamp_valid_until:
+                print("<---Expired Certificate!!--->")
+                valid_cert = False
+                
 
-            client_thread = threading.Thread(target=self.handle_client, args=(client_socket,))
-            client_thread.start()
+            # ------------------------------------------certificate check end !!--------------------------------------------
+            if valid_cert:
+                print("<---Valid Certificate--->")
+                self.client_public_key_pem = initiator_key
+                self.client_public_key = serialization.load_pem_public_key(self.client_public_key_pem)
 
-            send_thread = threading.Thread(target=self.send_messages, args=(client_socket,))
-            send_thread.start()
+                self.initiate_keyEx_s(client_socket)
+
+                client_thread = threading.Thread(target=self.handle_client, args=(client_socket,))
+                client_thread.start()
+
+                send_thread = threading.Thread(target=self.send_messages, args=(client_socket,))
+                send_thread.start()
 
         server_socket.close()  # Close the server socket when done
 
@@ -388,11 +402,11 @@ class SecureChat:
         certificate_chunks = []
         while True:
             data = client_socket.recv(4096)
-            print("data: ", data)
+            #print("data: ", data)
             if not data or data == b'END_OF_DATA_STREAM':
                 break
             certificate_chunks.append(data)
-        print("\nout\n")
+        
         # Deserialize the received data using pickle
         deserialized_chunks = [pickle.loads(chunk) for chunk in certificate_chunks]
         # Decrypt certificate
@@ -410,6 +424,7 @@ class SecureChat:
         timestamp_valid_until = int.from_bytes(decrypted_data[-8:], byteorder='big')
         initiator_id = initiator_id_binary.decode('utf-8')
         # Print extracted information
+        print("<---Certificate Received--->")
         print("key: ", initiator_key)
         print("Initiator ID:", initiator_id)
         print("Timestamp Created:", timestamp_created)
@@ -422,27 +437,38 @@ class SecureChat:
             certificate_chunks = pickle.load(file)
         # Send each certificate chunk
         for chunk in certificate_chunks:
-            print("Sent: ", chunk)
+            #print("Sent: ", chunk)
             client_socket.sendall(pickle.dumps(chunk))
             time.sleep(0.3)  # Add a small delay
         client_socket.send(b'END_OF_DATA_STREAM')
- 
-        self.initiate_keyEx_c(client_socket)
- 
-        receive_thread = threading.Thread(target=self.receive_messages, args=(client_socket,))
-        receive_thread.start()
- 
-        while True:
-            message = input()
-            if message.lower() == 'exit':
-                break
-            elif message.startswith(":$"):
-                self.command_Set(message, client_socket)
-            else:
-                client_socket.send(self.EncryptSession(message))
-                self.message_count = self.message_count + 1
-                if self.message_count%10 == 0:
-                    self.changeSess()
+
+        # ------------------------------------------certificate check start !!------------------------------------------
+        valid_cert = True
+        curr_time = time.time()
+        if curr_time > timestamp_valid_until:
+            print("<---Expired Certificate!!--->")
+            valid_cert = False
+
+        # ------------------------------------------certificate check end !!--------------------------------------------
+
+        if valid_cert:
+            print("<---Valid Certificate--->")
+            self.initiate_keyEx_c(client_socket)
+    
+            receive_thread = threading.Thread(target=self.receive_messages, args=(client_socket,))
+            receive_thread.start()
+    
+            while True:
+                message = input()
+                if message.lower() == 'exit':
+                    break
+                elif message.startswith(":$"):
+                    self.command_Set(message, client_socket)
+                else:
+                    client_socket.send(self.EncryptSession(message))
+                    self.message_count = self.message_count + 1
+                    if self.message_count%10 == 0:
+                        self.changeSess()
  
         client_socket.close()
 

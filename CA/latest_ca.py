@@ -28,7 +28,7 @@ def load_public_key(filename):
 # Create a digital certificate
 def create_certificate(initiator_public_key_pem, initiator_id, ca_private_key):
     timestamp_created = int(time.time())  # Current time
-    timestamp_valid_until = timestamp_created + 3600  # Valid for 1 hour
+    timestamp_valid_until = timestamp_created + 3600*24*30  # Valid for 1 month
     
     # Concatenate information
     data = initiator_public_key_pem + initiator_id.encode('utf-8') + \
