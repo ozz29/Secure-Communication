@@ -16,6 +16,11 @@ import threading
 import hashlib
 import pickle
 
+# Load an RSA key from a file.
+# Args:
+# - filename (str): The path to the file containing the RSA key.
+# Returns:
+# - RSA key: The RSA key loaded from the file.
 def load_key(filename):
     with open(filename, "rb") as key_file:
         key = RSA.import_key(key_file.read())
@@ -39,10 +44,13 @@ class SecureChat:
     # the PEM variables makes the public/private key variable pem encoded
     # PEM encoding is used basically for presenting on screen
     def generate_key(self):
+        # Define paths for the public and private key files
         public_key_path = 'keys/public_key.pem'
         private_key_path = 'keys/private_key.pem'
- 
+
+        # Check if the key files already exist
         if os.path.exists(public_key_path) and os.path.exists(private_key_path):
+            # If the files exist, load the keys from the files
             with open(public_key_path, 'rb') as f:
                 self.public_key_pem = f.read()
                 self.public_key = serialization.load_pem_public_key(self.public_key_pem)
@@ -50,14 +58,16 @@ class SecureChat:
             with open(private_key_path, 'rb') as f:
                 self.private_key_pem = f.read()
                 self.private_key = serialization.load_pem_private_key(self.private_key_pem, password=None)
- 
+
+        # If the key files do not exist, generate new keys
         else:
             self.private_key = asymmetric.rsa.generate_private_key(
                 public_exponent=65537,
                 key_size=1024
             )
             self.public_key = self.private_key.public_key()
- 
+
+            # Serialize the keys to PEM format
             self.public_key_pem = self.public_key.public_bytes(
                 encoding=serialization.Encoding.PEM,
                 format=serialization.PublicFormat.SubjectPublicKeyInfo
@@ -67,7 +77,7 @@ class SecureChat:
                 format=serialization.PrivateFormat.TraditionalOpenSSL,
                 encryption_algorithm=serialization.NoEncryption()
             )
- 
+            # Write the keys to the files
             with open(public_key_path, 'wb') as f:
                 f.write(self.public_key_pem)
  
@@ -275,6 +285,20 @@ class SecureChat:
         # Send the encrypted message and its hash to the server
         return cipher_text + "10101".encode() + hash_message.encode()
 
+    #Get the IP address of the current machine.
+    #Returns:
+    #- str: The IP address of the current machine.
+    
+    def get_ip_address(self):
+        # Create a socket object using IPv4 and UDP
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))  # Google's DNS server address
+        # Get the socket's own IP address, which is the local IP address of the machine
+        ip_address = s.getsockname()[0]
+        # Close the socket to release resources
+        s.close()
+        return ip_address
+
     # Server socket is initialised
     # Only accepts connection and not directs connection
     # -> Keys are generated
@@ -282,45 +306,48 @@ class SecureChat:
     # -> Initiation of session key exchange
     # Starting threads, because we allow bidirectional communication
 
-    def get_ip_address(self):
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))  # Google's DNS server address
-        ip_address = s.getsockname()[0]
-        s.close()
-        return ip_address
-
     # Server side
     def start_server(self):
+        # Create a TCP server socket
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        # generate the key if required, else just read the keys from the given files and store them accordingly
         self.generate_key()
-
+        
+        # get the host machine's ip address and set the port for the socket to bind
         host = self.get_ip_address()
         port = 12345
 
+        # Bind the server socket to the IP address and port
         server_socket.bind((host, port))
+        # Start listening for incoming connections
         server_socket.listen()
 
         print("Server listening on {}:{}".format(host, port))
 
         while True:
+            # accept connections from different sources
             client_socket, client_address = server_socket.accept()
             print("Connection from", client_address)
 
-            # Sending portion
+            # Sending the device's certificate chunks to the connected device
+            # first open the certificate file
             with open('../INITIATOR/certificate_chunks.pkl', 'rb') as file:
                 certificate_chunks = pickle.load(file)
 
-            # Send each certificate chunk
+            # Send each certificate chunk to the connected device
             for chunk in certificate_chunks:
                 #print("Sent: ", chunk)
                 client_socket.sendall(pickle.dumps(chunk))
                 time.sleep(0.3)  # Add a small delay
+            # this indicates the certificates are sent
             client_socket.send(b'END_OF_DATA_STREAM')
             
             print("All certificate chunks sent")
 
-            # Receiving portion
+            # Receiving the other device's certificate chunks
+            # loading the CA's public key for decryption on the certificate
             ca_public_key = load_key("keys/ca_public_key.pem")
+
 
             # Receive certificate chunks
             certificate_chunks = []
@@ -330,26 +357,26 @@ class SecureChat:
                 if not data or data == b'END_OF_DATA_STREAM':
                     break
                 certificate_chunks.append(data)
-            # Deserialize the received data using pickle
+            # Deserialize the received data using pickle to convert them into a valid data format
             deserialized_chunks = [pickle.loads(chunk) for chunk in certificate_chunks]
 
-            # Decrypt certificate
+            # Decrypt certificate to extract the proper data within the certificate
             decrypted_data = b''
             cipher_rsa = PKCS1_OAEP.new(ca_public_key)
             for encrypted_chunk in deserialized_chunks:
                 decrypted_chunk = cipher_rsa.decrypt(encrypted_chunk)
                 decrypted_data += decrypted_chunk
 
-            # Find the positions of delimiter characters
+            # Find the positions of delimiter characters for the end of the public key of the other device
             pub_key_end = decrypted_data.find(b'\n-----END PUBLIC KEY-----') + len(b'\n-----END PUBLIC KEY-----')
 
-            # Extract initiator ID and timestamps
+            # Extract initiator ID and timestamps and other device's public key
             initiator_key = decrypted_data[:pub_key_end]
             initiator_id_binary = decrypted_data[pub_key_end:-16]
+            initiator_id = initiator_id_binary.decode('utf-8')
             timestamp_created = int.from_bytes(decrypted_data[-16:-8], byteorder='big')
             timestamp_valid_until = int.from_bytes(decrypted_data[-8:], byteorder='big')
 
-            initiator_id = initiator_id_binary.decode('utf-8')
 
             # Print extracted information
             print("<---Certifcate Received--->")
@@ -362,12 +389,14 @@ class SecureChat:
 
             curr_time = time.time()
             valid_cert = True
+            # the certificate is expired if the current time is greater than the validity time of the certificate
             if curr_time > timestamp_valid_until:
                 print("<---Expired Certificate!!--->")
                 valid_cert = False
                 
 
             # ------------------------------------------certificate check end !!--------------------------------------------
+            # proceed only if the certificate is valid
             if valid_cert:
                 print("<---Valid Certificate--->")
                 self.client_public_key_pem = initiator_key
@@ -387,15 +416,20 @@ class SecureChat:
 
     # Client side
     def client_side(self):
+        # Create a TCP server socket
         client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        # generate the key if required, else just read the keys from the given files and store them accordingly
         self.generate_key()
- 
+
+        # enter the address of the server that you want to connect to
         server_ip = input("Enter server IP address: ")
         server_port = int(input("Enter server port: "))
- 
+
+        # try to connect to the server via socket connect
         client_socket.connect((server_ip, server_port))
  
-        # Receiving portion
+        # Receiving the certificate chunks of the server/peer's certificate
+        # loading the CA's public key for decryption on the certificate
         ca_public_key = load_key("keys/ca_public_key.pem")
  
         # Receive certificate chunks
@@ -407,7 +441,7 @@ class SecureChat:
                 break
             certificate_chunks.append(data)
         
-        # Deserialize the received data using pickle
+        # Deserialize the received data using pickle to convert them into a valid data format
         deserialized_chunks = [pickle.loads(chunk) for chunk in certificate_chunks]
         # Decrypt certificate
         decrypted_data = b''
@@ -415,14 +449,17 @@ class SecureChat:
         for encrypted_chunk in deserialized_chunks:
             decrypted_chunk = cipher_rsa.decrypt(encrypted_chunk)
             decrypted_data += decrypted_chunk
+        
         # Find the positions of delimiter characters
         pub_key_end = decrypted_data.find(b'\n-----END PUBLIC KEY-----') + len(b'\n-----END PUBLIC KEY-----')
-        # Extract initiator ID and timestamps
+        
+        # Extract initiator ID and timestamps and other device's public key
         initiator_key = decrypted_data[:pub_key_end]
         initiator_id_binary = decrypted_data[pub_key_end:-16]
+        initiator_id = initiator_id_binary.decode('utf-8')
         timestamp_created = int.from_bytes(decrypted_data[-16:-8], byteorder='big')
         timestamp_valid_until = int.from_bytes(decrypted_data[-8:], byteorder='big')
-        initiator_id = initiator_id_binary.decode('utf-8')
+        
         # Print extracted information
         print("<---Certificate Received--->")
         print("key: ", initiator_key)
@@ -435,6 +472,7 @@ class SecureChat:
         # Sending portion
         with open('../INITIATOR/certificate_chunks.pkl', 'rb') as file:
             certificate_chunks = pickle.load(file)
+        
         # Send each certificate chunk
         for chunk in certificate_chunks:
             #print("Sent: ", chunk)
@@ -445,12 +483,13 @@ class SecureChat:
         # ------------------------------------------certificate check start !!------------------------------------------
         valid_cert = True
         curr_time = time.time()
+        # the certificate is expired if the current time is greater than the validity time of the certificate
         if curr_time > timestamp_valid_until:
             print("<---Expired Certificate!!--->")
             valid_cert = False
 
         # ------------------------------------------certificate check end !!--------------------------------------------
-
+        # proceed only if the certificate is valid
         if valid_cert:
             print("<---Valid Certificate--->")
             self.initiate_keyEx_c(client_socket)
